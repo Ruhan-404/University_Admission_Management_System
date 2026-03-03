@@ -1,0 +1,489 @@
+<?php
+require_once 'includes/db.php';
+
+if (!isset($_SESSION['student_id'])) {
+  header('Location: login.php'); exit;
+}
+
+$student_id = (int)$_SESSION['student_id'];
+
+// Ensure step rows exist (safety)
+$ensure = $conn->prepare("
+  INSERT IGNORE INTO student_step_status (student_id, step_id, status)
+  SELECT ?, st.id, 'waiting'
+  FROM admission_steps st
+  WHERE st.is_active = 1
+");
+$ensure->bind_param('i', $student_id);
+$ensure->execute();
+$ensure->close();
+
+// Read-only meta (top alert)
+$student = [
+  'gst_roll' => $_SESSION['student_gst'] ?? '',
+  'dept'     => $_SESSION['student_dept'] ?? '',
+  'merit'    => $_SESSION['student_merit'] ?? '',
+];
+
+// Load existing form (for edit)
+$existing = $conn->prepare("SELECT * FROM admission_forms WHERE student_id = ? LIMIT 1");
+$existing->bind_param('i', $student_id);
+$existing->execute();
+$form = $existing->get_result()->fetch_assoc() ?: [];
+$existing->close();
+
+$error = '';
+
+function save_photo($oldValue = null) {
+  if (!isset($_FILES['photo']) || $_FILES['photo']['error'] === UPLOAD_ERR_NO_FILE) {
+    return $oldValue ?: null;
+  }
+  if ($_FILES['photo']['error'] !== UPLOAD_ERR_OK) {
+    return $oldValue ?: null;
+  }
+
+  $ext = strtolower(pathinfo($_FILES['photo']['name'], PATHINFO_EXTENSION));
+  if (!in_array($ext, ['jpg','jpeg','png'], true)) {
+    return $oldValue ?: null;
+  }
+
+  if (!is_dir('uploads')) {
+    @mkdir('uploads', 0755, true);
+  }
+
+  $newName = 'photo_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+  $dest = 'uploads/' . $newName;
+
+  if (move_uploaded_file($_FILES['photo']['tmp_name'], $dest)) {
+    return $dest;
+  }
+  return $oldValue ?: null;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+  // Text fields
+  $full_name = trim($_POST['full_name'] ?? '');
+  $father_name = trim($_POST['father_name'] ?? '');
+  $mother_name = trim($_POST['mother_name'] ?? '');
+  $dob = trim($_POST['dob'] ?? '');
+  $gender = trim($_POST['gender'] ?? '');
+  $blood_group = trim($_POST['blood_group'] ?? '');
+  $nationality = trim($_POST['nationality'] ?? '');
+  $religion = trim($_POST['religion'] ?? '');
+  $nid = trim($_POST['nid'] ?? '');
+
+  $present_address = trim($_POST['present_address'] ?? '');
+  $permanent_address = trim($_POST['permanent_address'] ?? '');
+  $district = trim($_POST['district'] ?? '');
+  $division = trim($_POST['division'] ?? '');
+  $postal_code = trim($_POST['postal_code'] ?? '');
+
+  $ssc_roll = trim($_POST['ssc_roll'] ?? '');
+  $ssc_reg  = trim($_POST['ssc_reg'] ?? '');
+  $ssc_year = (int)($_POST['ssc_year'] ?? 0);
+
+  $hsc_roll = trim($_POST['hsc_roll'] ?? '');
+  $hsc_reg  = trim($_POST['hsc_reg'] ?? '');
+  $hsc_year = (int)($_POST['hsc_year'] ?? 0);
+
+  $quota = trim($_POST['quota'] ?? '');
+
+  $guardian_name = trim($_POST['guardian_name'] ?? '');
+  $guardian_relation = trim($_POST['guardian_relation'] ?? '');
+  $guardian_phone = trim($_POST['guardian_phone'] ?? '');
+  $guardian_occupation = trim($_POST['guardian_occupation'] ?? '');
+  $annual_income = trim($_POST['annual_income'] ?? '');
+
+  $agree = isset($_POST['agree']);
+
+  // Basic validation
+  if (
+    $full_name === '' || $father_name === '' || $mother_name === '' || $dob === '' ||
+    $gender === '' || $blood_group === '' || $nationality === '' || $religion === '' || $nid === '' ||
+    $present_address === '' || $permanent_address === '' || $district === '' || $division === '' || $postal_code === '' ||
+    $ssc_roll === '' || $ssc_reg === '' || !$ssc_year ||
+    $hsc_roll === '' || $hsc_reg === '' || !$hsc_year ||
+    $quota === '' ||
+    $guardian_name === '' || $guardian_relation === '' || $guardian_phone === '' || $guardian_occupation === '' || $annual_income === ''
+  ) {
+    $error = "Please fill all required fields.";
+  } elseif (!$agree) {
+    $error = "You must accept the declaration.";
+  } else {
+
+    // Photo upload (keep old if not uploading)
+    $photo = save_photo($form['photo'] ?? null);
+
+    $sql = "
+      INSERT INTO admission_forms (
+        student_id,
+        full_name, father_name, mother_name, dob, gender, blood_group, nationality, religion, nid,
+        present_address, permanent_address, district, division, postal_code,
+        ssc_roll, ssc_reg, ssc_year,
+        hsc_roll, hsc_reg, hsc_year,
+        quota,
+        guardian_name, guardian_relation, guardian_phone, guardian_occupation, annual_income,
+        photo
+      )
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?,
+        ?,
+        ?, ?, ?, ?, ?,
+        ?
+      )
+      ON DUPLICATE KEY UPDATE
+        full_name=VALUES(full_name),
+        father_name=VALUES(father_name),
+        mother_name=VALUES(mother_name),
+        dob=VALUES(dob),
+        gender=VALUES(gender),
+        blood_group=VALUES(blood_group),
+        nationality=VALUES(nationality),
+        religion=VALUES(religion),
+        nid=VALUES(nid),
+        present_address=VALUES(present_address),
+        permanent_address=VALUES(permanent_address),
+        district=VALUES(district),
+        division=VALUES(division),
+        postal_code=VALUES(postal_code),
+        ssc_roll=VALUES(ssc_roll),
+        ssc_reg=VALUES(ssc_reg),
+        ssc_year=VALUES(ssc_year),
+        hsc_roll=VALUES(hsc_roll),
+        hsc_reg=VALUES(hsc_reg),
+        hsc_year=VALUES(hsc_year),
+        quota=VALUES(quota),
+        guardian_name=VALUES(guardian_name),
+        guardian_relation=VALUES(guardian_relation),
+        guardian_phone=VALUES(guardian_phone),
+        guardian_occupation=VALUES(guardian_occupation),
+        annual_income=VALUES(annual_income),
+        photo=VALUES(photo)
+    ";
+
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+      $error = "SQL Prepare failed: " . $conn->error;
+    } else {
+
+      // ✅ FIXED TYPES (28 vars total)
+      // i + 16s + i + 2s + i + 7s = 28
+      $types = 'i' . str_repeat('s', 16) . 'i' . str_repeat('s', 2) . 'i' . str_repeat('s', 7);
+
+      $stmt->bind_param(
+        $types,
+        $student_id,
+
+        // 16 strings (full_name -> ssc_reg)
+        $full_name, $father_name, $mother_name, $dob, $gender, $blood_group, $nationality, $religion, $nid,
+        $present_address, $permanent_address, $district, $division, $postal_code,
+        $ssc_roll, $ssc_reg,
+
+        // int
+        $ssc_year,
+
+        // 2 strings
+        $hsc_roll, $hsc_reg,
+
+        // int
+        $hsc_year,
+
+        // 7 strings (quota + guardian 5 + photo)
+        $quota,
+        $guardian_name, $guardian_relation, $guardian_phone, $guardian_occupation, $annual_income,
+        $photo
+      );
+
+      $stmt->execute();
+      $stmt->close();
+
+      // Mark step 1 as DONE (student can still edit anytime)
+      $upd1 = $conn->prepare("
+        UPDATE student_step_status ss
+        JOIN admission_steps st ON st.id = ss.step_id
+        SET ss.status = 'done'
+        WHERE ss.student_id = ? AND st.step_order = 1
+      ");
+      $upd1->bind_param('i', $student_id);
+      $upd1->execute();
+      $upd1->close();
+
+      header("Location: dashboard.php");
+      exit;
+    }
+  }
+}
+
+$page_title = 'Form Submission';
+include 'includes/header.php';
+
+function val($key, $form) {
+  return htmlspecialchars($_POST[$key] ?? ($form[$key] ?? ''), ENT_QUOTES);
+}
+?>
+
+<section class="card" role="region" aria-label="Admission Form">
+  <h2>Admission Form</h2>
+
+  <div class="alert" style="margin-bottom:14px;">
+    <b>GST Roll:</b> <?= htmlspecialchars($student['gst_roll']) ?> ·
+    <b>Dept:</b> <?= htmlspecialchars($student['dept']) ?> ·
+    <b>Merit:</b> #<?= (int)$student['merit'] ?>
+  </div>
+
+  <?php if ($error): ?>
+    <div class="alert error" role="alert"><?= htmlspecialchars($error) ?></div>
+  <?php endif; ?>
+
+  <form method="POST" enctype="multipart/form-data" autocomplete="off">
+
+    <div class="label" style="margin-top:6px;">Personal Information</div>
+
+    <div class="field">
+      <div class="label">Full Name</div>
+      <div class="control"><i class="fa-solid fa-user"></i>
+        <input type="text" name="full_name" value="<?= val('full_name',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Father's Name</div>
+      <div class="control"><i class="fa-solid fa-user"></i>
+        <input type="text" name="father_name" value="<?= val('father_name',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Mother's Name</div>
+      <div class="control"><i class="fa-solid fa-user"></i>
+        <input type="text" name="mother_name" value="<?= val('mother_name',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Date of Birth</div>
+      <div class="control"><i class="fa-solid fa-calendar"></i>
+        <input type="date" name="dob" value="<?= val('dob',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Gender</div>
+      <div class="control"><i class="fa-solid fa-venus-mars"></i>
+        <?php $g = $_POST['gender'] ?? ($form['gender'] ?? ''); ?>
+        <div class="select-wrap">
+          <select name="gender" required>
+            <option value="" disabled <?= $g===''?'selected':''; ?>>Select</option>
+            <option value="Male" <?= $g==='Male'?'selected':''; ?>>Male</option>
+            <option value="Female" <?= $g==='Female'?'selected':''; ?>>Female</option>
+            <option value="Other" <?= $g==='Other'?'selected':''; ?>>Other</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Blood Group</div>
+      <div class="control"><i class="fa-solid fa-droplet"></i>
+        <?php $bg = $_POST['blood_group'] ?? ($form['blood_group'] ?? ''); ?>
+        <div class="select-wrap">
+          <select name="blood_group" required>
+            <option value="" disabled <?= $bg===''?'selected':''; ?>>Select</option>
+            <?php foreach (['A+','A-','B+','B-','AB+','AB-','O+','O-'] as $opt): ?>
+              <option value="<?= $opt ?>" <?= $bg===$opt?'selected':''; ?>><?= $opt ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Nationality</div>
+      <div class="control"><i class="fa-solid fa-flag"></i>
+        <input type="text" name="nationality" value="<?= htmlspecialchars($_POST['nationality'] ?? ($form['nationality'] ?? 'Bangladeshi'), ENT_QUOTES) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Religion</div>
+      <div class="control"><i class="fa-solid fa-book"></i>
+        <input type="text" name="religion" value="<?= val('religion',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">NID / Birth Registration No</div>
+      <div class="control"><i class="fa-solid fa-id-card"></i>
+        <input type="text" name="nid" value="<?= val('nid',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="label" style="margin-top:14px;">Address</div>
+
+    <div class="field">
+      <div class="label">Present Address</div>
+      <div class="control"><i class="fa-solid fa-location-dot"></i>
+        <input type="text" name="present_address" value="<?= val('present_address',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Permanent Address</div>
+      <div class="control"><i class="fa-solid fa-location-dot"></i>
+        <input type="text" name="permanent_address" value="<?= val('permanent_address',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">District</div>
+      <div class="control"><i class="fa-solid fa-map"></i>
+        <input type="text" name="district" value="<?= val('district',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Division</div>
+      <div class="control"><i class="fa-solid fa-map"></i>
+        <input type="text" name="division" value="<?= val('division',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Postal Code</div>
+      <div class="control"><i class="fa-solid fa-hashtag"></i>
+        <input type="text" name="postal_code" value="<?= val('postal_code',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="label" style="margin-top:14px;">Academic Information</div>
+
+    <div class="field">
+      <div class="label">SSC Roll</div>
+      <div class="control"><i class="fa-solid fa-bars-staggered"></i>
+        <input type="text" name="ssc_roll" value="<?= val('ssc_roll',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">SSC Registration No</div>
+      <div class="control"><i class="fa-solid fa-bars-staggered"></i>
+        <input type="text" name="ssc_reg" value="<?= val('ssc_reg',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">SSC Passing Year</div>
+      <div class="control"><i class="fa-solid fa-calendar"></i>
+        <input type="number" name="ssc_year" min="1990" max="2100" value="<?= val('ssc_year',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">HSC Roll</div>
+      <div class="control"><i class="fa-solid fa-bars-staggered"></i>
+        <input type="text" name="hsc_roll" value="<?= val('hsc_roll',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">HSC Registration No</div>
+      <div class="control"><i class="fa-solid fa-bars-staggered"></i>
+        <input type="text" name="hsc_reg" value="<?= val('hsc_reg',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">HSC Passing Year</div>
+      <div class="control"><i class="fa-solid fa-calendar"></i>
+        <input type="number" name="hsc_year" min="1990" max="2100" value="<?= val('hsc_year',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="label" style="margin-top:14px;">Quota</div>
+
+    <div class="field">
+      <div class="label">Quota</div>
+      <div class="control"><i class="fa-solid fa-ticket"></i>
+        <?php $q = $_POST['quota'] ?? ($form['quota'] ?? 'None'); ?>
+        <div class="select-wrap">
+          <select name="quota" required>
+            <option value="None" <?= $q==='None'?'selected':''; ?>>None</option>
+            <option value="Freedom Fighter" <?= $q==='Freedom Fighter'?'selected':''; ?>>Freedom Fighter</option>
+            <option value="Tribal" <?= $q==='Tribal'?'selected':''; ?>>Tribal</option>
+            <option value="Disabled" <?= $q==='Disabled'?'selected':''; ?>>Disabled</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="label" style="margin-top:14px;">Guardian Information</div>
+
+    <div class="field">
+      <div class="label">Guardian Name</div>
+      <div class="control"><i class="fa-solid fa-user"></i>
+        <input type="text" name="guardian_name" value="<?= val('guardian_name',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Guardian Relation</div>
+      <div class="control"><i class="fa-solid fa-users"></i>
+        <input type="text" name="guardian_relation" value="<?= val('guardian_relation',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Guardian Phone</div>
+      <div class="control"><i class="fa-solid fa-phone"></i>
+        <input type="text" name="guardian_phone" value="<?= val('guardian_phone',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Guardian Occupation</div>
+      <div class="control"><i class="fa-solid fa-briefcase"></i>
+        <input type="text" name="guardian_occupation" value="<?= val('guardian_occupation',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="field">
+      <div class="label">Annual Family Income</div>
+      <div class="control"><i class="fa-solid fa-money-bill"></i>
+        <input type="text" name="annual_income" value="<?= val('annual_income',$form) ?>" required>
+      </div>
+    </div>
+
+    <div class="label" style="margin-top:14px;">Upload</div>
+
+    <div class="field">
+      <div class="label">Student Photo (jpg/png)</div>
+      <div class="control"><i class="fa-solid fa-image"></i>
+        <input type="file" name="photo" accept=".jpg,.jpeg,.png">
+      </div>
+      <?php if (!empty($form['photo'])): ?>
+        <div style="margin-top:10px;">
+          <span style="color:var(--muted); font-size:14px;">Current Photo:</span><br>
+          <img src="<?= htmlspecialchars($form['photo']) ?>" style="margin-top:6px; max-width:160px; border-radius:6px; border:1px solid #eee;">
+        </div>
+      <?php endif; ?>
+    </div>
+
+    <div class="field">
+      <label style="display:flex; gap:10px; align-items:center; font-family: Georgia, 'Times New Roman', serif; font-weight:700;">
+        <input type="checkbox" name="agree" <?= isset($_POST['agree']) ? 'checked' : ''; ?> required>
+        I confirm that all information provided is true and correct.
+      </label>
+    </div>
+
+    <div class="submit-row">
+      <button class="btn" type="submit">Save / Update</button>
+    </div>
+
+  </form>
+</section>
+
+<?php include 'includes/footer.php'; ?>
